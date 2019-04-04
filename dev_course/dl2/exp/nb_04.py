@@ -7,7 +7,7 @@
 from exp.nb_03 import *
 
 class DataBunch():
-    def __init__(self, train_dl, valid_dl, c):
+    def __init__(self, train_dl, valid_dl, c=None):
         self.train_dl,self.valid_dl,self.c = train_dl,valid_dl,c
 
     @property
@@ -66,6 +66,7 @@ from typing import *
 def listify(o):
     if o is None: return []
     if isinstance(o, list): return o
+    if isinstance(o, str): return [o]
     if isinstance(o, Iterable): return list(o)
     return [o]
 
@@ -109,7 +110,7 @@ class Runner():
         self.stop=False
 
     def fit(self, epochs, learn):
-        self.epochs,self.learn = epochs,learn
+        self.epochs,self.learn,self.loss = epochs,learn,tensor(0.)
 
         try:
             for cb in self.cbs: cb.set_runner(self)

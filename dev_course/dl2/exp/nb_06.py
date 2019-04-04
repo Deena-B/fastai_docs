@@ -4,7 +4,7 @@
 #################################################
 # file to edit: dev_nb/06_cuda_cnn_hooks_init.ipynb
 
-from exp.nb_05 import *
+from exp.nb_05b import *
 torch.set_num_threads(2)
 
 def normalize_to(train, valid):
@@ -53,7 +53,7 @@ def append_stats(hook, mod, inp, outp):
     stds .append(outp.data.std())
 
 class ListContainer():
-    def __init__(self, items): self.items = items
+    def __init__(self, items): self.items = listify(items)
     def __getitem__(self, idx):
         if isinstance(idx, (int,slice)): return self.items[idx]
         if isinstance(idx[0],bool):
@@ -66,18 +66,19 @@ class ListContainer():
     def __delitem__(self, i): del(self.items[i])
     def __repr__(self):
         res = f'{self.__class__.__name__} ({len(self)} items)\n{self.items[:10]}'
-        if len(self)>10: res += '...'
+        if len(self)>10: res = res[:-1]+ '...]'
         return res
 
 from torch.nn import init
 
 class Hooks(ListContainer):
     def __init__(self, ms, f): super().__init__([Hook(m, f) for m in ms])
+    def __enter__(self, *args): return self
+    def __exit__ (self, *args): self.remove()
+
     def __delitem__(self, i):
         self[i].remove()
         super().__delitem__(i)
-    def __enter__(self, *args): return self
-    def __exit__ (self, *args): self.remove()
 
     def remove(self):
         for h in self: h.remove()
@@ -103,16 +104,32 @@ class GeneralRelu(nn.Module):
         if self.maxv is not None: x.clamp_max_(self.maxv)
         return x
 
-def init_cnn(m):
+def init_cnn(m, uniform=False):
+    f = init.kaiming_uniform_ if uniform else init.kaiming_normal_
     for l in m:
         if isinstance(l, nn.Sequential):
-            init.kaiming_normal_(l[0].weight, a=0.1)
-            l[0].weight.data
+            f(l[0].weight, a=0.1)
+            l[0].bias.data.zero_()
 
 def get_cnn_model(data, nfs, layer, **kwargs):
     return nn.Sequential(*get_cnn_layers(data, nfs, layer, **kwargs))
 
-def get_learn_run(nfs, data, lr, layer, cbs=None, opt_func=None, **kwargs):
+def get_learn_run(nfs, data, lr, layer, cbs=None, opt_func=None, uniform=False, **kwargs):
     model = get_cnn_model(data, nfs, layer, **kwargs)
-    init_cnn(model)
+    init_cnn(model, uniform=uniform)
     return get_runner(model, data, lr=lr, cbs=cbs, opt_func=opt_func)
+
+from IPython.display import display, Javascript
+def nb_auto_export():
+    display(Javascript("""{
+const ip = IPython.notebook
+if (ip) {
+    ip.save_notebook()
+    console.log('a')
+    const s = `!python notebook2script.py ${ip.notebook_name}`
+    if (ip.kernel) {
+        console.log(s)
+        ip.kernel.execute()
+    }
+}
+}"""))
