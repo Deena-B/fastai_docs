@@ -25,9 +25,9 @@ def get_files(path, extensions=None, recurse=False, include=None):
     extensions = {e.lower() for e in extensions}
     if recurse:
         res = []
-        for p,d,f in os.walk(path): # returns (dirpath, dirnames, filenames)
-            if include is not None: d[:] = [o for o in d if o in include]
-            else:                   d[:] = [o for o in d if not o.startswith('.')]
+        for i,(p,d,f) in enumerate(os.walk(path)): # returns (dirpath, dirnames, filenames)
+            if include is not None and i==0: d[:] = [o for o in d if o in include]
+            else:                            d[:] = [o for o in d if not o.startswith('.')]
             res += _get_files(p, f, extensions)
         return res
     else:
@@ -45,7 +45,10 @@ class ItemList(ListContainer):
         self.path,self.tfms = Path(path),tfms
 
     def __repr__(self): return f'{super().__repr__()}\nPath: {self.path}'
-    def new(self, items): return self.__class__(items, self.path, tfms=self.tfms)
+
+    def new(self, items, cls=None):
+        if cls is None: cls=self.__class__
+        return cls(items, self.path, tfms=self.tfms)
 
     def  get(self, i): return i
     def _get(self, i): return compose(self.get(i), self.tfms)
@@ -74,22 +77,23 @@ def grandparent_splitter(fn, valid_name='valid', train_name='train'):
     gp = fn.parent.parent.name
     return True if gp==valid_name else False if gp==train_name else None
 
-def split_by_func(ds, f):
-    items = ds.items
+def split_by_func(items, f):
     mask = [f(o) for o in items]
     # `None` values will be filtered out
-    train = [o for o,m in zip(items,mask) if m==False]
-    valid = [o for o,m in zip(items,mask) if m==True ]
-    return train,valid
+    f = [o for o,m in zip(items,mask) if m==False]
+    t = [o for o,m in zip(items,mask) if m==True ]
+    return f,t
 
 class SplitData():
     def __init__(self, train, valid): self.train,self.valid = train,valid
 
     def __getattr__(self,k): return getattr(self.train,k)
+    #This is needed if we want to pickle SplitData and be able to load it back without recursion errors
+    def __setstate__(self,data:Any): self.__dict__.update(data)
 
     @classmethod
     def split_by_func(cls, il, f):
-        lists = map(il.new, split_by_func(il, f))
+        lists = map(il.new, split_by_func(il.items, f))
         return cls(*lists)
 
     def __repr__(self): return f'{self.__class__.__name__}\nTrain: {self.train}\nValid: {self.valid}\n'
@@ -107,7 +111,7 @@ class Processor():
 class CategoryProcessor(Processor):
     def __init__(self): self.vocab=None
 
-    def process(self, items):
+    def __call__(self, items):
         #The vocab is defined on the first use.
         if self.vocab is None:
             self.vocab = uniqueify(items)
@@ -120,38 +124,40 @@ class CategoryProcessor(Processor):
         return [self.deproc1(idx) for idx in idxs]
     def deproc1(self, idx): return self.vocab[idx]
 
-class ProcessedItemList(ListContainer):
-    def __init__(self, inputs, processor):
-        self.processor = processor
-        items = processor.process(inputs)
-        super().__init__(items)
-
-    def obj(self, idx):
-        res = self[idx]
-        if isinstance(res,(tuple,list,Generator)): return self.processor.deprocess(res)
-        return self.processor.deproc1(idx)
-
 def parent_labeler(fn): return fn.parent.name
 
-def _label_by_func(ds, f): return [f(o) for o in ds.items]
+def _label_by_func(ds, f, cls=ItemList): return cls([f(o) for o in ds.items], path=ds.path)
 
+#This is a slightly different from what was seen during the lesson,
+#   we'll discuss the changes in lesson 11
 class LabeledData():
-    def __init__(self, x, y): self.x,self.y = x,y
+    def process(self, il, proc): return il.new(compose(il.items, proc))
+
+    def __init__(self, x, y, proc_x=None, proc_y=None):
+        self.x,self.y = self.process(x, proc_x),self.process(y, proc_y)
+        self.proc_x,self.proc_y = proc_x,proc_y
 
     def __repr__(self): return f'{self.__class__.__name__}\nx: {self.x}\ny: {self.y}\n'
     def __getitem__(self,idx): return self.x[idx],self.y[idx]
     def __len__(self): return len(self.x)
 
-    @classmethod
-    def label_by_func(cls, il, f, proc=None):
-        labels = _label_by_func(il, f)
-        proc_labels = ProcessedItemList(labels, proc)
-        return cls(il, proc_labels)
+    def x_obj(self, idx): return self.obj(self.x, idx, self.proc_x)
+    def y_obj(self, idx): return self.obj(self.y, idx, self.proc_y)
 
-def label_by_func(sd, f):
-    proc = CategoryProcessor()
-    train = LabeledData.label_by_func(sd.train, f, proc)
-    valid = LabeledData.label_by_func(sd.valid, f, proc)
+    def obj(self, items, idx, procs):
+        isint = isinstance(idx, int) or (isinstance(idx,torch.LongTensor) and not idx.ndim)
+        item = items[idx]
+        for proc in reversed(listify(procs)):
+            item = proc.deproc1(item) if isint else proc.deprocess(item)
+        return item
+
+    @classmethod
+    def label_by_func(cls, il, f, proc_x=None, proc_y=None):
+        return cls(il, _label_by_func(il, f), proc_x=proc_x, proc_y=proc_y)
+
+def label_by_func(sd, f, proc_x=None, proc_y=None):
+    train = LabeledData.label_by_func(sd.train, f, proc_x=proc_x, proc_y=proc_y)
+    valid = LabeledData.label_by_func(sd.valid, f, proc_x=proc_x, proc_y=proc_y)
     return SplitData(train,valid)
 
 class ResizeFixed(Transform):
